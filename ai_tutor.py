@@ -82,6 +82,81 @@ def _is_transient_error(exc):
     ))
 
 
+def _is_auth_error(exc):
+    message = str(exc).lower()
+    return any(marker in message for marker in (
+        "api key", "api_key", "authentication", "permission", "unauthorized",
+        "403", "401", "permission_denied", "unauthenticated", "invalid_api_key",
+        "api_key_invalid", "consumer_invalid",
+    ))
+
+
+def _is_model_error(exc):
+    message = str(exc).lower()
+    return any(marker in message for marker in (
+        "not found", "model_not_found", "is not found for api",
+        "invalid model", "unknown model",
+    ))
+
+
+def _extract_response_text(response):
+    """Return (text, error). response.text raises on blocked/empty candidates."""
+    try:
+        text = response.text
+        if text and str(text).strip():
+            return str(text).strip(), None
+    except Exception:
+        pass
+
+    try:
+        for candidate in getattr(response, "candidates", None) or []:
+            content = getattr(candidate, "content", None)
+            parts = getattr(content, "parts", None) or []
+            chunks = [
+                part_text for part in parts
+                if (part_text := getattr(part, "text", None))
+            ]
+            if chunks:
+                return "\n".join(chunks).strip(), None
+            finish = getattr(candidate, "finish_reason", None)
+            if finish:
+                return None, f"Gemini finished without text (finish_reason={finish})."
+    except Exception:
+        pass
+
+    prompt_feedback = getattr(response, "prompt_feedback", None)
+    block_reason = getattr(prompt_feedback, "block_reason", None) if prompt_feedback else None
+    if block_reason:
+        return None, f"Gemini blocked the prompt (block_reason={block_reason})."
+
+    return None, "Gemini returned an empty response."
+
+
+def _extract_sources(response):
+    sources = []
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return sources
+        metadata = getattr(candidates[0], "grounding_metadata", None)
+        for chunk in getattr(metadata, "grounding_chunks", None) or []:
+            web = getattr(chunk, "web", None)
+            uri = getattr(web, "uri", None) if web else None
+            title = getattr(web, "title", None) if web else None
+            if uri and uri not in {item["url"] for item in sources}:
+                sources.append({"title": title or uri, "url": uri})
+    except Exception:
+        return []
+    return sources[:6]
+
+
+def _short_error(exc, limit=220):
+    text = " ".join(str(exc).split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
 def ask_tutor(question, context=None):
     key = _secret("GEMINI_API_KEY")
     if not key:
@@ -122,7 +197,6 @@ QUESTION:
     client = genai.Client(api_key=key)
     last_error = None
 
-    last_error = None
     for attempt in range(MAX_RETRIES + 1):
         try:
             config_kwargs = dict(
@@ -138,19 +212,14 @@ QUESTION:
                 contents=prompt,
                 config=types.GenerateContentConfig(**config_kwargs),
             )
-            text = getattr(response, "text", None)
-            sources = []
-            try:
-                metadata = response.candidates[0].grounding_metadata
-                for chunk in getattr(metadata, "grounding_chunks", []) or []:
-                    web = getattr(chunk, "web", None)
-                    uri = getattr(web, "uri", None) if web else None
-                    title = getattr(web, "title", None) if web else None
-                    if uri and uri not in {item["url"] for item in sources}:
-                        sources.append({"title": title or uri, "url": uri})
-            except Exception:
-                sources = []
-            return {"text": text or "I received a response but could not extract the tutor text.", "sources": sources[:6]}, None
+            text, extract_error = _extract_response_text(response)
+            if extract_error:
+                return None, extract_error
+
+            return {
+                "text": text or "I received a response but could not extract the tutor text.",
+                "sources": _extract_sources(response),
+            }, None
 
         except Exception as exc:
             last_error = exc
@@ -165,9 +234,6 @@ QUESTION:
 
             time.sleep(RETRY_DELAYS[attempt])
 
-    message = str(last_error)
-    lowered = message.lower()
-
     if _is_quota_error(last_error):
         return None, (
             "Gemini Free Tier quota has been reached for this project. "
@@ -178,13 +244,25 @@ QUESTION:
     if _is_transient_error(last_error):
         return None, "Gemini is temporarily unavailable. Please try again in a few seconds."
 
-    if "api key" in lowered or "authentication" in lowered or "permission" in lowered:
-        return None, "AI authentication failed. Check the configured API key in Streamlit Secrets."
+    if _is_auth_error(last_error):
+        return None, (
+            "AI authentication failed. In Streamlit Cloud → App settings → Secrets, set "
+            'GEMINI_API_KEY to a valid key from https://aistudio.google.com/apikey '
+            f"(detail: {_short_error(last_error)})"
+        )
 
-    if "not found" in lowered or ("model" in lowered and "not found" in lowered):
-        return None, "The configured AI model was not found. Check the model setting in Streamlit Secrets."
+    if _is_model_error(last_error):
+        return None, (
+            f"The configured AI model `{model}` was not found or is unavailable. "
+            "Set GEMINI_MODEL in Streamlit Secrets, e.g. gemini-2.5-flash-lite "
+            f"(detail: {_short_error(last_error)})"
+        )
 
-    return None, "The TradeWar AI assistant encountered an unexpected Gemini API error. Please check the Gemini API project settings."
+    return None, (
+        "The TradeWar AI assistant hit a Gemini API error. "
+        "Check the API key, model name, and that the Generative Language API is enabled "
+        f"for this Google AI Studio project (detail: {_short_error(last_error)})"
+    )
 
 
 def render_global_chatbot():
