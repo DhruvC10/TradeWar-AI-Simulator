@@ -11,7 +11,7 @@ KNOWLEDGE_DIR = Path(__file__).resolve().parent / "knowledge"
 # switching models does not bypass an exhausted project quota.
 MAX_RETRIES = 1
 RETRY_DELAYS = (2.0,)
-DEFAULT_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 MAX_KNOWLEDGE_CHARS = 8000
 MAX_OUTPUT_TOKENS = 800
 
@@ -254,7 +254,7 @@ QUESTION:
     if _is_model_error(last_error):
         return None, (
             f"The configured AI model `{model}` was not found or is unavailable. "
-            "Set GEMINI_MODEL in Streamlit Secrets, e.g. gemini-2.5-flash-lite "
+            "Set GEMINI_MODEL in Streamlit Secrets, e.g. gemini-3.5-flash-lite "
             f"(detail: {_short_error(last_error)})"
         )
 
