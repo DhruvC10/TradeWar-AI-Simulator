@@ -17,6 +17,6 @@ borderColor = "#e2e8f0"
 
 [server]
 headless = true
-port = 8501
+# Port is not hardcoded so Railway/local can set it via CLI ($PORT) or Streamlit default (8501).
 enableCORS = false
 enableXsrfProtection = true
